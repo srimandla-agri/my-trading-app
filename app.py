@@ -86,7 +86,7 @@ with st.sidebar:
 
 if st.session_state['load_success']:
     if not st.session_state['final_list']:
-        st.warning("No stocks found matching the criteria. Try lowering the Momentum Strength.")
+        st.warning("No stocks found matching the criteria.")
     else:
         df_final = pd.DataFrame(st.session_state['final_list'])
         
