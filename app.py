@@ -19,88 +19,202 @@ st.markdown("""
          -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
          font-weight: 800; letter-spacing: 1px;}
     .stButton>button { height: 45px !important; width: 100% !important; font-weight: bold !important; border-radius: 8px !important; }
-    th { background-color: #1E2129 !important; color: #00FFC8 !important; }
-    .stMetric { background-color: #1E2129; padding: 15px; border-radius: 10px; border: 1px solid #333; }
+    th { background-color: #1E2129 !important; color: #00FFC8 !important; font-size: 16px !important;}
     </style>
     """, unsafe_allow_html=True)
 
-st.markdown("<h1>⚡ SNIPER MOMENTUM TERMINAL</h1>", unsafe_allow_html=True)
+st.title("⚡ SNIPER Momentum Terminal")
 
-TICKERS = [
-    'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS', 'BHARTIARTL.NS',
-    'SBIN.NS', 'LICI.NS', 'ITC.NS', 'HINDUNILVR.NS', 'LT.NS', 'BAJFINANCE.NS',
-    'HCLTECH.NS', 'MARUTI.NS', 'SUNPHARMA.NS', 'ADANIENT.NS', 'KOTAKBANK.NS', 'TITAN.NS',
-    'AXISBANK.NS', 'ULTRACEMCO.NS', 'ONGC.NS', 'ADANIPORTS.NS', 'NTPC.NS', 'JSWSTEEL.NS'
-]
+with st.expander("🧠 Insider Strategy Analysis (Click to view)"):
+    st.markdown("""
+    🟢 **Early RSI (>= 58):** 60 దాటడానికి ముందే పట్టుకునే లాజిక్. 70 దాటితే 🚀 Super Bullish!  
+    🔵 **EMA 20 Distance (Rubber Band):** స్టాక్ EMA 20 కి 8% కంటే ఎక్కువ దూరంలో ఉంటే 'Overextended' (ప్రమాదం). దగ్గరగా ఉంటే 'Perfect Entry'.  
+    📉 **Pullback Volume:** ధర పడిపోయినప్పుడు వాల్యూమ్ తక్కువగా ఉంటే (Dry Volume), అది ఇన్స్టిట్యూషన్స్ హోల్డ్ చేస్తున్నారని అర్థం.
+    """)
+
+def get_nse_ticker(name):
+    name = str(name).strip().upper()
+    if " " in name or "LTD" in name or "LIMITED" in name or "CORP" in name:
+        clean_name = name.replace(" LIMITED", "").replace(" LTD", "").replace(" (INDIA)", "").replace(" CORPORATION", "").strip()
+        try:
+            url = f"https://query2.finance.yahoo.com/v1/finance/search?q={clean_name}"
+            res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
+            for quote in res.get('quotes', []):
+                if quote.get('exchange') == 'NSI': return quote['symbol']
+            return clean_name.split()[0] + ".NS"
+        except: return clean_name.split()[0] + ".NS"
+    else:
+        return name if name.endswith(".NS") else name + ".NS"
 
 with st.sidebar:
-    st.markdown("### 🛠️ Scan Settings")
-    risk_per_trade = st.number_input("Risk Per Trade (₹)", value=2000, step=500)
-    momentum_threshold = st.slider("Momentum Strength (%)", 1, 10, 3)
+    st.header("🛡️ Risk Controller")
+    cap_rupees = st.number_input("Capital (₹)", value=100000, step=5000)
+    risk_pct = st.slider("Risk per Trade (%)", min_value=0.5, max_value=5.0, value=1.0, step=0.1)
+    max_l = (cap_rupees * risk_pct) / 100
+    st.markdown(f"**Max Risk per Trade:** ₹{max_l:.0f}")
     
-    if st.button("📥 LOAD DATA"):
-        with st.status("🔍 Scanning Nifty Top 20 Stocks...", expanded=True) as status:
-            st.session_state['final_list'] = []
-            st.session_state['raw_scan_data'] = []
-            st.session_state['debug_info'] = []
-            
-            for ticker in TICKERS:
-                try:
-                    st.write(f"Checking {ticker}...")
-                    stock = yf.Ticker(ticker)
-                    df = stock.history(period="1y")
-                    
-                    if len(df) < 50: continue
-                    
-                    cp = df['Close'].iloc[-1]
-                    ma20 = df['Close'].rolling(20).mean().iloc[-1]
-                    ma50 = df['Close'].rolling(50).mean().iloc[-1]
-                    
-                    change_1d = ((cp - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
-                    
-                    if cp > ma20 > ma50 and change_1d > momentum_threshold:
-                        sl = cp * 0.98
-                        target = cp * 1.05
-                        qty = int(risk_per_trade / (cp - sl)) if (cp - sl) > 0 else 0
-                        
-                        st.session_state['final_list'].append({
-                            '⭐ Stock': ticker.replace('.NS',''),
-                            '💰 Price': round(cp, 2),
-                            '📈 Chg%': f"{round(change_1d, 2)}%",
-                            '🛑 StopLoss': round(sl, 2),
-                            '🎯 Target': round(target, 2),
-                            '📦 Qty': qty,
-                            '💎 Status': 'BULLISH'
-                        })
-                        
-                        st.session_state['raw_scan_data'].append({
-                            'Stock': ticker.replace('.NS',''),
-                            'Price': cp,
-                            'SL': sl
-                        })
-                except Exception as e:
-                    st.session_state['debug_info'].append(f"Error on {ticker}: {e}")
-            
+    st.write("---")
+    st.header("⚙️ Sniper Engine")
+    strict_mode = st.checkbox("🔥 Enable Pro Filters (RSI, EMA 20, Volume)", value=True)
+
+c1, c2, c3, c4 = st.columns([3, 2, 1.5, 1.5])
+with c1: 
+    p_input = st.text_input("Names", placeholder="NTPC, COAL INDIA...", label_visibility="collapsed")
+with c2: 
+    u_file = st.file_uploader("CSV", type="csv", label_visibility="collapsed")
+
+with c3:
+    if st.button("📥 LOAD DATA", type="secondary"):
+        stocks = []
+        if u_file:
+            df_csv = pd.read_csv(u_file)
+            for col in df_csv.columns:
+                if df_csv[col].astype(str).str.contains('[A-Za-z]').any():
+                    stocks = df_csv[col].dropna().astype(str).tolist()
+                    break
+        elif p_input:
+            stocks = [x.strip() for x in p_input.replace('\n', ',').split(',') if x.strip()]
+        
+        if stocks: 
+            st.session_state['final_list'] = stocks
             st.session_state['load_success'] = True
-            status.update(label="✅ Scan Complete!", state="complete", expanded=False)
-
-if st.session_state['load_success']:
-    if not st.session_state['final_list']:
-        st.warning("No stocks found matching the criteria.")
-    else:
-        df_final = pd.DataFrame(st.session_state['final_list'])
+        else:
+            st.session_state['load_success'] = False
+        st.rerun()
         
-        c1, c2, c3, c4 = st.columns([3, 2, 1.5, 1.5])
-        with c1: st.metric("📡 Stocks Scanned", len(TICKERS))
-        with c2: st.metric("🔥 Momentum Picks", len(df_final))
-        with c3: st.metric("🛡️ Risk Applied", f"₹{risk_per_trade}")
-        with c4: st.metric("📊 Timeframe", "Daily")
+    # ఈ ఒక్క చిన్న లైన్ మాత్రమే యాడ్ చేశాను, మీ లాజిక్ ఏమీ మారదు
+    if st.session_state['load_success']:
+        st.markdown(f"<div style='color:#00FFC8; font-weight:bold; text-align:center;'>✅ {len(st.session_state['final_list'])} Stocks Ready!</div>", unsafe_allow_html=True)
 
-        st.markdown("### 🚀 Live Signals")
+with c4:
+    if st.button("🚀 SCAN STOCKS", type="primary"):
+        if not st.session_state['final_list']:
+            st.warning("Load Data First!")
+        else:
+            raw_data, logs = [], []
+            p_bar = st.progress(0)
+            status_txt = st.empty()
+            
+            for i, raw_name in enumerate(st.session_state['final_list']):
+                time.sleep(0.2)
+                if str(raw_name).isdigit() or len(str(raw_name)) < 2: continue
+                
+                status_txt.markdown(f"**Scanning:** {raw_name}...")
+                ticker = get_nse_ticker(raw_name)
+                
+                try:
+                    df = yf.Ticker(ticker).history(period="1y")
+                    if df.empty or len(df) < 100:
+                        logs.append({"Stock": raw_name, "Status": "No Data"})
+                        continue
+                    
+                    last_p = float(df['Close'].iloc[-1])
+                    prev_p = float(df['Close'].iloc[-2])
+                    if last_p < 50: continue
+                    
+                    # --- INDICATORS CALCULATION ---
+                    delta = df['Close'].diff()
+                    gain = delta.clip(lower=0)
+                    loss = -1 * delta.clip(upper=0)
+                    ema_gain = gain.ewm(com=13, adjust=False).mean()
+                    ema_loss = loss.ewm(com=13, adjust=False).mean()
+                    rs = ema_gain / ema_loss
+                    df['RSI'] = 100 - (100 / (1 + rs))
+                    rsi_val = float(df['RSI'].iloc[-1])
+                    
+                    ema20 = float(df['Close'].ewm(span=20, adjust=False).mean().iloc[-1])
+                    sma50 = float(df['Close'].rolling(50).mean().iloc[-1])
+                    
+                    avg_vol = float(df['Volume'].rolling(20).mean().iloc[-1])
+                    today_vol = float(df['Volume'].iloc[-1])
+                    
+                    # 💡 NEW LOGIC: Distance from EMA 20 (%)
+                    dist_from_ema = ((last_p - ema20) / ema20) * 100
+                    
+                    # 💡 NEW LOGIC: Pullback Volume Analysis
+                    vol_status = "Normal"
+                    if last_p < prev_p and today_vol < avg_vol:
+                        vol_status = "📉 Dry Pullback (Safe)"
+                    elif last_p < prev_p and today_vol > avg_vol:
+                        vol_status = "🩸 Heavy Selling (Risky)"
+                    elif last_p > prev_p and today_vol > avg_vol:
+                        vol_status = "📈 Volume Breakout!"
+                    
+                    # --- STRICT FILTERS ---
+                    if strict_mode:
+                        if avg_vol < 100000:
+                            logs.append({"Stock": raw_name, "Status": "Low Volume"})
+                            continue
+                        if last_p < ema20:
+                            logs.append({"Stock": raw_name, "Status": "Below EMA 20"})
+                            continue
+                        if last_p < sma50:
+                            logs.append({"Stock": raw_name, "Status": "Below SMA 50"})
+                            continue
+                        if rsi_val < 58:  
+                            logs.append({"Stock": raw_name, "Status": f"RSI < 58 ({rsi_val:.1f})"})
+                            continue
+
+                    # ATR RISK
+                    h_l = df['High'] - df['Low']
+                    tr = pd.concat([h_l, abs(df['High']-df['Close'].shift()), abs(df['Low']-df['Close'].shift())], axis=1).max(axis=1)
+                    risk_per_share = 1.5 * float(tr.rolling(14).mean().iloc[-1])
+                    if risk_per_share <= 0: risk_per_share = last_p * 0.02
+                    
+                    # Labeling
+                    rsi_label = f"{rsi_val:.1f} 🚀" if rsi_val >= 70 else (f"{rsi_val:.1f} 🔥" if rsi_val >= 60 else f"{rsi_val:.1f} 📈")
+                    
+                    # Danger Zone Check
+                    ema_zone = f"Perfect ({dist_from_ema:.1f}%)" if dist_from_ema <= 8 else f"⚠️ Extended ({dist_from_ema:.1f}%)"
+
+                    raw_data.append({
+                        "Stock": raw_name, "Symbol": ticker, 
+                        "Price": round(last_p, 2), "RSI": rsi_label,
+                        "EMA 20 Zone": ema_zone,
+                        "Volume Action": vol_status,
+                        "SL": round(last_p - risk_per_share, 2), 
+                        "Risk_Per_Share": risk_per_share
+                    })
+                        
+                except Exception as e:
+                    logs.append({"Stock": raw_name, "Status": "Data Error"})
+                
+                p_bar.progress((i + 1) / len(st.session_state['final_list']))
+            
+            status_txt.success("✨ Sniper Scan Complete!")
+            st.session_state['raw_scan_data'] = raw_data
+            st.session_state['debug_info'] = logs
+
+# --- DYNAMIC RESULTS ---
+if st.session_state['raw_scan_data']:
+    st.divider()
+    
+    display_list = []
+    for item in st.session_state['raw_scan_data']:
+        q = int(max_l / item['Risk_Per_Share'])
+        if (q * item['Price']) > cap_rupees: q = int(cap_rupees / item['Price'])
         
+        if q > 0:
+            display_list.append({
+                "⭐ Stock": item['Stock'],
+                "📊 RSI": item['RSI'],
+                "🔵 EMA Zone": item['EMA 20 Zone'],
+                "🔊 Vol Action": item['Volume Action'],
+                "💲 Price": item['Price'], 
+                "🛑 SL": item['SL'], 
+                "📦 Qty": q, 
+                "💰 Invest (₹)": round(q * item['Price'], 2)
+            })
+            
+    if display_list:
+        df_final = pd.DataFrame(display_list)
+        st.markdown("### 🏆 Top Sniper Picks")
+        
+        # Color formatting
         def color_cells(val):
-            if 'BULLISH' in str(val): return 'color: #00FFC8; font-weight: bold'
-            if '%' in str(val): return 'color: #00FFC8'
+            if isinstance(val, str):
+                if '⚠️ Extended' in val or '🩸 Heavy' in val: return 'color: #FF4B4B;'
+                if 'Perfect' in val or 'Dry Pullback' in val or 'Breakout' in val: return 'color: #00FFC8;'
             return ''
             
         st.dataframe(df_final.style.applymap(color_cells), use_container_width=True)
@@ -118,13 +232,12 @@ if st.session_state['load_success']:
         with pc2:
             st.metric("💰 Total Investment", f"₹ {round(manual_qty * base_item['Price'], 2)}")
         with pc3:
-            st.metric("🛑 Total Risk (If SL Hit)", f"₹ {round(manual_qty * (base_item['Price'] - base_item['SL']), 2)}")
+            st.metric("🛑 Total Risk (If SL Hit)", f"₹ {round(manual_qty * base_item['Risk_Per_Share'], 2)}")
         st.markdown("</div>", unsafe_allow_html=True)
-        
-else:
-    st.info("👈 Click on 'LOAD DATA' in the sidebar to start the scanner.")
 
+elif st.session_state['debug_info']:
+    st.error("No stocks matched the strict criteria.")
+    
 if st.session_state['debug_info']:
-    with st.expander("🛠️ Debug Logs"):
-        for log in st.session_state['debug_info']:
-            st.write(log)
+    with st.expander("🔍 Rejection Details (Why stocks failed)"):
+        st.table(pd.DataFrame(st.session_state['debug_info']))
