@@ -3,48 +3,39 @@ import yfinance as yf
 import pandas as pd
 import requests
 import time
-import concurrent.futures # స్పీడ్ పెంచడానికి కొత్త ఇంపోర్ట్ (Multithreading)
+import concurrent.futures
 
-st.set_page_config(page_title="Pro Momentum Terminal", layout="wide")
+st.set_page_config(page_title="PRO Swing Trading Terminal", layout="wide")
 
 if 'final_list' not in st.session_state: st.session_state['final_list'] = []
 if 'raw_scan_data' not in st.session_state: st.session_state['raw_scan_data'] = []
 if 'debug_info' not in st.session_state: st.session_state['debug_info'] = []
 if 'load_success' not in st.session_state: st.session_state['load_success'] = False
 
-# సెక్టార్ ఇండెక్స్ మ్యాపింగ్ 
 SECTOR_INDICES = {
-    "Financial Services": "^NSEBANK",
-    "Technology": "^CNXIT",
-    "Healthcare": "^CNXPHARMA",
-    "Consumer Cyclical": "^CNXAUTO",
-    "Consumer Defensive": "^CNXFMCG",
-    "Basic Materials": "^CNXMETAL",
-    "Energy": "^CNXENERGY",
-    "Industrials": "^CNXINFRA",
-    "Real Estate": "^CNXREALTY",
-    "Communication Services": "^CNXMEDIA"
+    "Financial Services": "^NSEBANK", "Technology": "^CNXIT", "Healthcare": "^CNXPHARMA",
+    "Consumer Cyclical": "^CNXAUTO", "Consumer Defensive": "^CNXFMCG", "Basic Materials": "^CNXMETAL",
+    "Energy": "^CNXENERGY", "Industrials": "^CNXINFRA", "Real Estate": "^CNXREALTY", "Communication Services": "^CNXMEDIA"
 }
 
 st.markdown("""
     <style>
     [data-testid="stHeader"] {height: 0rem !important;}
     h1 { font-size: 1.8rem !important; margin-top: -30px; 
-         background: -webkit-linear-gradient(45deg, #00FFC8, #0080FF); 
+         background: -webkit-linear-gradient(45deg, #FF9933, #FF4B4B); 
          -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
          font-weight: 800; letter-spacing: 1px;}
     .stButton>button { height: 45px !important; width: 100% !important; font-weight: bold !important; border-radius: 8px !important; }
-    th { background-color: #1E2129 !important; color: #00FFC8 !important; font-size: 16px !important;}
+    th { background-color: #1E2129 !important; color: #FF9933 !important; font-size: 16px !important;}
     </style>
     """, unsafe_allow_html=True)
 
-st.title("⚡ SNIPER Momentum Terminal")
+st.title("🦅 PRO Swing Trading Terminal")
 
-# --- 💡 NEW FEATURE 1 & 4: Caching Nifty & Sectors for Hyper Speed ---
-@st.cache_data(ttl=900) # ప్రతి 15 నిమిషాలకు ఒకసారి మాత్రమే డేటా లాగుతుంది (స్పీడ్ కోసం)
+@st.cache_data(ttl=900) 
 def get_market_health():
     try:
-        nifty = yf.Ticker("^NSEI").history(period="1mo")
+        nifty = yf.Ticker("^NSEI").history(period="6mo")
         close = nifty['Close'].iloc[-1]
         ema20 = nifty['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
         delta = nifty['Close'].diff()
@@ -52,8 +43,14 @@ def get_market_health():
         loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
         rsi = float((100 - (100 / (1 + (gain / loss)))).iloc[-1])
         status = "Bullish 🟢" if close > ema20 and rsi > 55 else ("Bearish 🔴" if close < ema20 and rsi < 45 else "Sideways 🟡")
-        return f"<span style='color:#00FFC8;'>**NIFTY 50:** {close:.0f}</span> | **Trend:** {status} | **RSI:** {rsi:.1f}"
-    except: return "NIFTY 50: Status Unavailable"
+        
+        nifty_50d_ret = ((close - nifty['Close'].iloc[-50]) / nifty['Close'].iloc[-50]) * 100
+        health_text = f"<span style='color:#FF9933;'>**NIFTY 50:** {close:.0f}</span> | **Trend:** {status} | **RSI:** {rsi:.1f}"
+        return health_text, nifty_50d_ret
+    except: return "NIFTY 50: Status Unavailable", 0
+
+market_health, nifty_50d_ret = get_market_health()
+st.markdown(f"<div style='padding:10px; background-color:#1E2129; border-radius:8px; text-align:center; border:1px solid #FF9933; margin-bottom:15px;'>🧭 {market_health}</div>", unsafe_allow_html=True)
 
 @st.cache_data(ttl=900)
 def get_all_sector_trends():
@@ -70,19 +67,6 @@ def get_all_sector_trends():
         except: sector_trends[sec] = "N/A"
     return sector_trends
 
-# Nifty 50 Dashboard Display
-market_health = get_market_health()
-st.markdown(f"<div style='padding:10px; background-color:#1E2129; border-radius:8px; text-align:center; border:1px solid #0080FF; margin-bottom:15px;'>🧭 {market_health}</div>", unsafe_allow_html=True)
-
-with st.expander("🧠 Strategy & Logic (Click to view)"):
-    st.markdown("""
-    🟢 **Early RSI (>= 58):** 60 దాటడానికి ముందే పట్టుకునే లాజిక్.  
-    🔵 **EMA 20 Distance:** స్టాక్ EMA 20 కి దగ్గరగా ఉంటే 'Perfect Entry'.  
-    📉 **Pullback Volume:** ధర పడిపోయినప్పుడు వాల్యూమ్ తక్కువగా ఉంటే సేఫ్.
-    🏢 **Sector Strength:** సెక్టార్ RSI 60 పైన ఉంటే బెస్ట్ అప్‌ట్రెండ్.
-    ⚡ **Volume Multiplier:** బ్రేకౌట్ టైమ్‌లో వాల్యూమ్ ఎన్ని రెట్లు పెరిగిందో చూపిస్తుంది (ఉదా: 3x).
-    """)
-
 def get_nse_ticker(name):
     name = str(name).strip().upper()
     if " " in name or "LTD" in name or "LIMITED" in name or "CORP" in name:
@@ -96,76 +80,95 @@ def get_nse_ticker(name):
         except: return clean_name.split()[0] + ".NS"
     else: return name if name.endswith(".NS") else name + ".NS"
 
-# --- 💡 NEW FEATURE 4: Multithreading Engine ---
-def analyze_stock(raw_name, sector_trends_dict, strict_mode):
+def analyze_stock(raw_name, sector_trends_dict, strict_mode, nifty_50d_ret):
     if len(str(raw_name)) < 2: return {"success": False, "log": None}
     ticker = get_nse_ticker(raw_name)
     
     try:
         yticker = yf.Ticker(ticker)
-        df = yticker.history(period="1y")
-        if len(df) < 100: return {"success": False, "log": {"Stock": raw_name, "Status": "No Data"}}
+        df = yticker.history(period="2y") 
+        
+        if len(df) < 200: return {"success": False, "log": {"Stock": raw_name, "Status": "Not enough data for 200 MA"}}
         
         last_p, prev_p = float(df['Close'].iloc[-1]), float(df['Close'].iloc[-2])
-        if last_p < 50: return {"success": False, "log": None}
+        if last_p < 50: return {"success": False, "log": {"Stock": raw_name, "Status": "Price < 50"}}
         
-        try: stock_sector = yticker.info.get('sector', 'Unknown')
-        except: stock_sector = "Unknown"
+        today_vol = float(df['Volume'].iloc[-1])
+        turnover = last_p * today_vol 
+        
+        high_52w = float(df['High'].tail(252).max())
+        dist_from_52w = ((high_52w - last_p) / high_52w) * 100
+        
+        stock_50d_ret = ((last_p - df['Close'].iloc[-50]) / df['Close'].iloc[-50]) * 100
+        rs_rating = stock_50d_ret - nifty_50d_ret
+        rs_str = f"👑 Alpha (+{rs_rating:.1f}%)" if rs_rating > 5 else (f"🟢 Outperforming (+{rs_rating:.1f}%)" if rs_rating > 0 else f"🔴 Weak ({rs_rating:.1f}%)")
+        
+        stock_sector = "Unknown"
+        for _ in range(2): 
+            try:
+                info_dict = yticker.info
+                stock_sector = info_dict.get('sector', info_dict.get('industry', 'Unknown'))
+                if stock_sector != "Unknown": break
+            except: time.sleep(0.5)
             
         sector_trend = sector_trends_dict.get(stock_sector, "N/A")
         short_sector = stock_sector.replace(" Services", "").replace(" Defensive", "").replace(" Cyclical", "")
         
-        delta = df['Close'].diff()
-        rs = delta.clip(lower=0).ewm(com=13, adjust=False).mean() / (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
-        rsi_val = float((100 - (100 / (1 + rs))).iloc[-1])
-        
         ema20 = float(df['Close'].ewm(span=20, adjust=False).mean().iloc[-1])
         sma50 = float(df['Close'].rolling(50).mean().iloc[-1])
-        avg_vol, today_vol = float(df['Volume'].rolling(20).mean().iloc[-1]), float(df['Volume'].iloc[-1])
+        sma200 = float(df['Close'].rolling(200).mean().iloc[-1])
+        
+        avg_vol = float(df['Volume'].rolling(20).mean().iloc[-1])
         dist_from_ema = ((last_p - ema20) / ema20) * 100
         
-        # --- 💡 NEW FEATURE 2: Volume Multiplier ---
         vol_mult = today_vol / avg_vol if avg_vol > 0 else 1
         vol_status = "Normal"
-        if last_p < prev_p and today_vol < avg_vol: vol_status = f"📉 Dry Pullback ({vol_mult:.1f}x)"
+        
+        if vol_mult >= 3.0 and last_p > prev_p: vol_status = f"🔥 MEGA SPIKE ({vol_mult:.1f}x)"
+        elif last_p < prev_p and today_vol < avg_vol: vol_status = f"📉 Dry Pullback ({vol_mult:.1f}x)"
         elif last_p < prev_p and today_vol > avg_vol: vol_status = f"🩸 Heavy Selling ({vol_mult:.1f}x)"
         elif last_p > prev_p and today_vol > avg_vol: vol_status = f"📈 Breakout ({vol_mult:.1f}x)"
         
         if strict_mode:
-            if avg_vol < 100000 or last_p < ema20 or last_p < sma50 or rsi_val < 58:
-                return {"success": False, "log": {"Stock": raw_name, "Status": "Failed Filters"}}
+            if turnover < 10000000: 
+                return {"success": False, "log": {"Stock": raw_name, "Status": "Turnover < 1 Crore"}}
+            if dist_from_52w > 25: 
+                return {"success": False, "log": {"Stock": raw_name, "Status": f"Too far from 52W High ({dist_from_52w:.1f}%)"}}
+            if rs_rating < -5: 
+                return {"success": False, "log": {"Stock": raw_name, "Status": f"Weak vs Nifty ({rs_rating:.1f}%)"}}
+            if last_p < ema20 or last_p < sma50 or last_p < sma200:
+                return {"success": False, "log": {"Stock": raw_name, "Status": "Failed Trend Filters (Below MAs)"}}
 
         tr = pd.concat([df['High']-df['Low'], abs(df['High']-df['Close'].shift()), abs(df['Low']-df['Close'].shift())], axis=1).max(axis=1)
         risk_per_share = 1.5 * float(tr.rolling(14).mean().iloc[-1])
         if risk_per_share <= 0: risk_per_share = last_p * 0.02 
         
-        rsi_label = f"{rsi_val:.1f} 🚀" if rsi_val >= 70 else (f"{rsi_val:.1f} 🔥" if rsi_val >= 60 else f"{rsi_val:.1f} 📈")
         ema_zone = f"Perfect ({dist_from_ema:.1f}%)" if dist_from_ema <= 8 else f"⚠️ Extended ({dist_from_ema:.1f}%)"
+        high_dist_str = f"Near High ({dist_from_52w:.1f}%)" if dist_from_52w <= 10 else f"{dist_from_52w:.1f}% Away"
 
-        # --- 💡 NEW FEATURE 3: TradingView Chart Link ---
         tv_symbol = ticker.replace(".NS", "")
         tv_link = f"https://in.tradingview.com/chart/?symbol=NSE:{tv_symbol}"
 
         data = {
-            "Stock": raw_name, "Sector": short_sector, "Sec_Trend": sector_trend,
-            "RSI": rsi_label, "EMA Zone": ema_zone, "Vol Action": vol_status, 
+            "Stock": raw_name, "Ticker": ticker, "Sector": short_sector, "Sec_Trend": sector_trend,
+            "RS (Nifty)": rs_str, "52W High": high_dist_str, "EMA Zone": ema_zone, "Vol Action": vol_status, 
             "Price": round(last_p, 2), "SL": round(last_p - risk_per_share, 2),
             "Risk_Per_Share": risk_per_share, "Chart": tv_link
         }
         return {"success": True, "data": data}
-    except Exception: return {"success": False, "log": {"Stock": raw_name, "Status": "Error"}}
+    except Exception: return {"success": False, "log": {"Stock": raw_name, "Status": "Error Fetching Data"}}
 
 with st.sidebar:
-    st.header("🛡️ Risk Controller")
+    st.header("🛡️ Pro Risk Controller")
     cap_rupees = st.number_input("Capital (₹)", value=100000, step=5000)
     risk_pct = st.slider("Risk per Trade (%)", min_value=0.5, max_value=5.0, value=1.0, step=0.1)
     max_l = (cap_rupees * risk_pct) / 100
     st.markdown(f"**Max Risk per Trade:** ₹{max_l:.0f}")
     st.write("---")
-    strict_mode = st.checkbox("🔥 Enable Pro Filters (RSI, EMA 20, Volume)", value=True)
+    strict_mode = st.checkbox("🔥 Enable Pro Swing Filters", value=True)
 
 c1, c2, c3, c4 = st.columns([3, 2, 1.5, 1.5])
-with c1: p_input = st.text_input("Names", placeholder="NTPC, COAL INDIA...", label_visibility="collapsed")
+with c1: p_input = st.text_input("Names", placeholder="NTPC, ITC...", label_visibility="collapsed")
 with c2: u_file = st.file_uploader("CSV", type="csv", label_visibility="collapsed")
 with c3:
     if st.button("📥 LOAD DATA", type="secondary"):
@@ -183,38 +186,33 @@ with c3:
         st.rerun()
         
     if st.session_state['load_success']:
-        st.markdown(f"<div style='color:#00FFC8; font-weight:bold; text-align:center;'>✅ {len(st.session_state['final_list'])} Ready!</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='color:#FF9933; font-weight:bold; text-align:center;'>✅ {len(st.session_state['final_list'])} Ready!</div>", unsafe_allow_html=True)
 
 with c4:
     if st.button("🚀 SCAN STOCKS", type="primary"):
         if not st.session_state['final_list']: st.warning("Load Data First!")
         else:
             raw_data, logs = [], []
-            
-            with st.spinner("Pre-fetching Sector Trends..."):
+            with st.spinner("Analyzing Sectors & Preparing Setup..."):
                 sector_trends_dict = get_all_sector_trends()
 
             p_bar = st.progress(0)
             status_txt = st.empty()
-            status_txt.markdown(f"**⚡ Scanning {len(st.session_state['final_list'])} stocks at hyper-speed...**")
+            status_txt.markdown(f"**⚡ Scanning {len(st.session_state['final_list'])} stocks...**")
             
-            # --- HYPER SPEED EXECUTOR ---
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {executor.submit(analyze_stock, name, sector_trends_dict, strict_mode): name for name in st.session_state['final_list']}
-                
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {executor.submit(analyze_stock, name, sector_trends_dict, strict_mode, nifty_50d_ret): name for name in st.session_state['final_list']}
                 for i, future in enumerate(concurrent.futures.as_completed(futures)):
                     res = future.result()
                     if res['success']: raw_data.append(res['data'])
                     elif res['log']: logs.append(res['log'])
-                    
                     p_bar.progress((i + 1) / len(st.session_state['final_list']))
             
-            status_txt.success("✨ Sniper Scan Complete!")
+            status_txt.success("✨ Pro Scan Complete!")
             st.session_state['raw_scan_data'] = raw_data
             st.session_state['debug_info'] = logs
             st.session_state['scan_triggered'] = True 
 
-# --- DYNAMIC RESULTS & AUTO-UPDATING TABLE ---
 if st.session_state['raw_scan_data']:
     st.divider()
     
@@ -222,26 +220,29 @@ if st.session_state['raw_scan_data']:
         st.session_state['df_final'] = pd.DataFrame(st.session_state['raw_scan_data'])
         st.session_state['scan_triggered'] = False
         
-    st.markdown("### 🏆 Top Sniper Picks (✏️ **Double-click Price or SL to Edit!**)")
-    st.markdown("<span style='color:grey; font-size:14px;'>*Click 'Open 📊' to see TradingView chart. If you change the Price, SL auto-updates keeping ATR intact.*</span>", unsafe_allow_html=True)
+    st.markdown("### 🏆 Top Swing Picks (✏️ **Double-click Price or SL to Edit!**)")
+    st.markdown("<span style='color:grey; font-size:14px;'>*Click 'Open 📊' to see TradingView chart.*</span>", unsafe_allow_html=True)
     
     def color_cells(val):
         if isinstance(val, str):
-            if '⚠️' in val or '🩸' in val: return 'color: #FF4B4B;'
-            if 'Perfect' in val or 'Dry Pullback' in val or 'Breakout' in val or '🚀' in val: return 'color: #00FFC8;'
+            if '⚠️' in val or '🩸' in val or 'Away' in val or 'Weak' in val or '🔴' in val: return 'color: #FF4B4B;'
+            if 'Perfect' in val or 'Dry Pullback' in val or 'Near High' in val or 'Outperforming' in val or '🟢' in val: return 'color: #00FFC8;'
+            if 'MEGA SPIKE' in val or 'Alpha' in val or '👑' in val: return 'color: #FFD700; font-weight: bold;'
         return ''
     
     df_to_display = st.session_state['df_final']
     styled_df = df_to_display.style.map(color_cells) if hasattr(df_to_display.style, 'map') else df_to_display.style.applymap(color_cells)
     
-    # 💡 Chart Link Column Added
     edited_df = st.data_editor(
         styled_df,
         use_container_width=True,
         hide_index=True,
-        disabled=['Stock', 'Sector', 'Sec_Trend', 'RSI', 'EMA Zone', 'Vol Action', 'Chart'], 
+        disabled=['Stock', 'Sector', 'Sec_Trend', 'RS (Nifty)', '52W High', 'EMA Zone', 'Vol Action', 'Chart'], 
         column_config={
             "Risk_Per_Share": None, 
+            "Ticker": None, 
+            "RS (Nifty)": st.column_config.TextColumn("⚖️ RS (Nifty)"),
+            "52W High": st.column_config.TextColumn("🎯 52W High"),
             "Chart": st.column_config.LinkColumn("📺 Chart", display_text="Open 📊"),
             "Price": st.column_config.NumberColumn("💲 Price", format="%.2f", step=0.5),
             "SL": st.column_config.NumberColumn("🛑 SL (ATR)", format="%.2f", step=0.5)
@@ -266,34 +267,25 @@ if st.session_state['raw_scan_data']:
     else:
         st.session_state['df_final'] = edited_df
     
-    # --- EXECUTION PLANNER ---
-    st.markdown("<br><h3 style='color:#FFA500;'>🎯 Trade Execution Planner</h3>", unsafe_allow_html=True)
+    st.markdown("<br><h3 style='color:#FF9933;'>🎯 Trade Execution Planner</h3>", unsafe_allow_html=True)
     selected_stock = st.selectbox("👉 Choose Stock to view Final Plan", st.session_state['df_final']['Stock'].tolist())
     
     row = st.session_state['df_final'][st.session_state['df_final']['Stock'] == selected_stock].iloc[0]
-    calc_price = float(row['Price'])
-    calc_sl = float(row['SL'])
+    calc_price, calc_sl = float(row['Price']), float(row['SL'])
+    new_risk_per_share = calc_price - calc_sl if (calc_price - calc_sl) > 0 else 1 
     
-    new_risk_per_share = calc_price - calc_sl
-    if new_risk_per_share <= 0: new_risk_per_share = 1 
+    calc_qty = max(1, int(max_l / new_risk_per_share))
+    if (calc_qty * calc_price) > cap_rupees: calc_qty = max(1, int(cap_rupees / calc_price))
     
-    calc_qty = int(max_l / new_risk_per_share)
-    if (calc_qty * calc_price) > cap_rupees: calc_qty = int(cap_rupees / calc_price)
-    calc_qty = max(1, calc_qty) 
-    
-    st.markdown(f"<div style='background-color:#1E2129; padding:20px; border-radius:10px; border: 1px solid #00FFC8;'>", unsafe_allow_html=True)
+    st.markdown(f"<div style='background-color:#1E2129; padding:20px; border-radius:10px; border: 1px solid #FF9933;'>", unsafe_allow_html=True)
     col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.markdown(f"<h4 style='color:#00FFC8; margin-top:0px;'>{selected_stock}</h4><span style='color:white; font-size:14px;'>{row['Sector']} | RSI: {row['Sec_Trend']}</span>", unsafe_allow_html=True)
-    with col2:
-        st.metric("📦 Adjusted Quantity", f"{calc_qty} Shares")
-    with col3:
-        st.metric("💰 Total Invest", f"₹ {round(calc_qty * calc_price, 2)}")
-    with col4:
-        st.metric("🛑 Total Risk", f"₹ {round(calc_qty * new_risk_per_share, 2)}")
+    with col1: st.markdown(f"<h4 style='color:#FF9933; margin-top:0px;'>{selected_stock}</h4><span style='color:white; font-size:14px;'>{row['Sector']} | RSI: {row['Sec_Trend']}</span>", unsafe_allow_html=True)
+    with col2: st.metric("📦 Adjusted Quantity", f"{calc_qty} Shares")
+    with col3: st.metric("💰 Total Invest", f"₹ {round(calc_qty * calc_price, 2)}")
+    with col4: st.metric("🛑 Total Risk", f"₹ {round(calc_qty * new_risk_per_share, 2)}")
     st.markdown("</div>", unsafe_allow_html=True)
 
 elif st.session_state['debug_info']:
-    st.error("No stocks matched the strict criteria.")
+    st.error("No stocks matched the Strict Pro Filters.")
     with st.expander("🔍 Rejection Details (Why stocks failed)"):
         st.table(pd.DataFrame(st.session_state['debug_info']))
