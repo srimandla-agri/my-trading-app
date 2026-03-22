@@ -1,16 +1,16 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import requests
+import numpy as np
 import time
 import concurrent.futures
 
+# --- 1. PAGE CONFIGURATION ---
 st.set_page_config(page_title="PRO Swing Trading Terminal", layout="wide")
 
 if 'final_list' not in st.session_state: st.session_state['final_list'] = []
-if 'raw_scan_data' not in st.session_state: st.session_state['raw_scan_data'] = []
-if 'debug_info' not in st.session_state: st.session_state['debug_info'] = []
-if 'load_success' not in st.session_state: st.session_state['load_success'] = False
+if 'df_main' not in st.session_state: st.session_state['df_main'] = pd.DataFrame()
+if 'load_status' not in st.session_state: st.session_state['load_status'] = ""
 
 SECTOR_INDICES = {
     "Financial Services": "^NSEBANK", "Technology": "^CNXIT", "Healthcare": "^CNXPHARMA",
@@ -18,19 +18,24 @@ SECTOR_INDICES = {
     "Energy": "^CNXENERGY", "Industrials": "^CNXINFRA", "Real Estate": "^CNXREALTY", "Communication Services": "^CNXMEDIA"
 }
 
+# --- 2. CSS STYLING ---
 st.markdown("""
     <style>
     [data-testid="stHeader"] {height: 0rem !important;}
     h1 { font-size: 1.8rem !important; margin-top: -30px; 
          background: -webkit-linear-gradient(45deg, #FF9933, #FF4B4B); 
          -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
-         font-weight: 800; letter-spacing: 1px;}
+         font-weight: 800; text-align: center;}
     .stButton>button { height: 45px !important; width: 100% !important; font-weight: bold !important; border-radius: 8px !important; }
-    th { background-color: #1E2129 !important; color: #FF9933 !important; font-size: 16px !important;}
+    th { background-color: #1E2129 !important; color: #FF9933 !important; font-size: 14px !important;}
+    div[data-testid="stMetricValue"] { font-size: 24px !important; color: #FF9933 !important; }
+    .main { background-color: #0E1117; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🦅 PRO Swing Trading Terminal")
+st.title("🦅 PRO SWING TRADING TERMINAL")
+
+# --- 3. CORE ANALYTICS ENGINE ---
 
 @st.cache_data(ttl=900) 
 def get_market_health():
@@ -43,14 +48,9 @@ def get_market_health():
         loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
         rsi = float((100 - (100 / (1 + (gain / loss)))).iloc[-1])
         status = "Bullish 🟢" if close > ema20 and rsi > 55 else ("Bearish 🔴" if close < ema20 and rsi < 45 else "Sideways 🟡")
-        
-        nifty_50d_ret = ((close - nifty['Close'].iloc[-50]) / nifty['Close'].iloc[-50]) * 100
-        health_text = f"<span style='color:#FF9933;'>**NIFTY 50:** {close:.0f}</span> | **Trend:** {status} | **RSI:** {rsi:.1f}"
-        return health_text, nifty_50d_ret
-    except: return "NIFTY 50: Status Unavailable", 0
-
-market_health, nifty_50d_ret = get_market_health()
-st.markdown(f"<div style='padding:10px; background-color:#1E2129; border-radius:8px; text-align:center; border:1px solid #FF9933; margin-bottom:15px;'>🧭 {market_health}</div>", unsafe_allow_html=True)
+        nifty_ret = ((close - nifty['Close'].iloc[-50]) / nifty['Close'].iloc[-50]) * 100
+        return f"**NIFTY 50:** {close:.0f} | **Trend:** {status} | **RSI:** {rsi:.1f}", nifty_ret
+    except: return "NIFTY 50: N/A", 0
 
 @st.cache_data(ttl=900)
 def get_all_sector_trends():
@@ -58,234 +58,191 @@ def get_all_sector_trends():
     for sec, ticker in SECTOR_INDICES.items():
         try:
             df_sec = yf.Ticker(ticker).history(period="3mo")
-            if len(df_sec) < 50: continue
             delta = df_sec['Close'].diff()
             gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
             loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
-            sec_rsi_val = float((100 - (100 / (1 + (gain / loss)))).iloc[-1])
-            sector_trends[sec] = f"{sec_rsi_val:.1f} 🚀" if sec_rsi_val >= 60 else f"{sec_rsi_val:.1f} ⚠️"
+            rsi = float((100 - (100 / (1 + (gain / loss)))).iloc[-1])
+            sector_trends[sec] = f"{rsi:.1f} 🚀" if rsi >= 60 else f"{rsi:.1f} ⚠️"
         except: sector_trends[sec] = "N/A"
     return sector_trends
 
-def get_nse_ticker(name):
-    name = str(name).strip().upper()
-    if " " in name or "LTD" in name or "LIMITED" in name or "CORP" in name:
-        clean_name = name.replace(" LIMITED", "").replace(" LTD", "").replace(" (INDIA)", "").replace(" CORPORATION", "").strip()
-        try:
-            url = f"https://query2.finance.yahoo.com/v1/finance/search?q={clean_name}"
-            res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
-            for quote in res.get('quotes', []):
-                if quote.get('exchange') == 'NSI': return quote['symbol']
-            return clean_name.split()[0] + ".NS"
-        except: return clean_name.split()[0] + ".NS"
-    else: return name if name.endswith(".NS") else name + ".NS"
-
-def analyze_stock(raw_name, sector_trends_dict, strict_mode, nifty_50d_ret):
-    if len(str(raw_name)) < 2: return {"success": False, "log": None}
-    ticker = get_nse_ticker(raw_name)
-    
+def run_backtest(df):
     try:
-        yticker = yf.Ticker(ticker)
-        df = yticker.history(period="2y") 
+        data = df.tail(252).copy()
+        data['E20'] = data['Close'].ewm(span=20).mean()
+        wins, total = 0, 0
+        for i in range(1, len(data)-10):
+            if data['Close'].iloc[i] > data['E20'].iloc[i] and data['Close'].iloc[i-1] <= data['E20'].iloc[i-1]:
+                total += 1
+                if data['High'].iloc[i+1:i+11].max() > data['Close'].iloc[i] * 1.05: wins += 1
+        return f"{(wins/total*100):.0f}%" if total > 0 else "0%"
+    except: return "0%"
+
+def analyze_stock(raw_name, sector_trends_dict, nifty_50d_ret):
+    s_name = str(raw_name).strip().upper()
+    ticker = s_name + ".NS" if ".NS" not in s_name else s_name
+    try:
+        yt = yf.Ticker(ticker)
+        df = yt.history(period="2y")
+        if len(df) < 50: return None
         
-        if len(df) < 200: return {"success": False, "log": {"Stock": raw_name, "Status": "Not enough data for 200 MA"}}
+        last_p = float(df['Close'].iloc[-1])
+        prev_p = float(df['Close'].iloc[-2])
         
-        last_p, prev_p = float(df['Close'].iloc[-1]), float(df['Close'].iloc[-2])
-        if last_p < 50: return {"success": False, "log": {"Stock": raw_name, "Status": "Price < 50"}}
-        
-        today_vol = float(df['Volume'].iloc[-1])
-        turnover = last_p * today_vol 
-        
+        # --- INTERNAL FILTERS (200 MA & NEW LISTING) ---
+        if len(df) >= 200:
+            ma200 = df['Close'].rolling(window=200).mean().iloc[-1]
+            if last_p < ma200: return None 
+        else:
+            e20_i, e50_i = float(df['Close'].ewm(span=20).mean().iloc[-1]), float(df['Close'].ewm(span=50).mean().iloc[-1])
+            if last_p < e20_i or last_p < e50_i: return None
+
+        ema20 = float(df['Close'].ewm(span=20).mean().iloc[-1])
         high_52w = float(df['High'].tail(252).max())
-        dist_from_52w = ((high_52w - last_p) / high_52w) * 100
+        dist_52w = ((high_52w - last_p) / high_52w) * 100
         
-        stock_50d_ret = ((last_p - df['Close'].iloc[-50]) / df['Close'].iloc[-50]) * 100
-        rs_rating = stock_50d_ret - nifty_50d_ret
-        rs_str = f"👑 Alpha (+{rs_rating:.1f}%)" if rs_rating > 5 else (f"🟢 Outperforming (+{rs_rating:.1f}%)" if rs_rating > 0 else f"🔴 Weak ({rs_rating:.1f}%)")
+        rs_rating = (((last_p - df['Close'].iloc[-50]) / df['Close'].iloc[-50]) * 100) - nifty_50d_ret
+        rs_str = "👑 Alpha" if rs_rating > 5 else ("🟢 Good" if rs_rating > 0 else "🔴 Weak")
         
-        stock_sector = "Unknown"
-        for _ in range(2): 
-            try:
-                info_dict = yticker.info
-                stock_sector = info_dict.get('sector', info_dict.get('industry', 'Unknown'))
-                if stock_sector != "Unknown": break
-            except: time.sleep(0.5)
-            
-        sector_trend = sector_trends_dict.get(stock_sector, "N/A")
-        short_sector = stock_sector.replace(" Services", "").replace(" Defensive", "").replace(" Cyclical", "")
+        vol_mult = df['Volume'].iloc[-1] / df['Volume'].rolling(20).mean().iloc[-1]
+        if vol_mult >= 3.0 and last_p > prev_p: vol_status = "🔥 MEGA SPIKE"
+        elif last_p > prev_p and vol_mult > 1.2: vol_status = "📈 Breakout"
+        elif last_p < prev_p and vol_mult < 0.8: vol_status = "📉 Dry Pullback"
+        else: vol_status = "Normal"
         
-        ema20 = float(df['Close'].ewm(span=20, adjust=False).mean().iloc[-1])
-        sma50 = float(df['Close'].rolling(50).mean().iloc[-1])
-        sma200 = float(df['Close'].rolling(200).mean().iloc[-1])
-        
-        avg_vol = float(df['Volume'].rolling(20).mean().iloc[-1])
-        dist_from_ema = ((last_p - ema20) / ema20) * 100
-        
-        vol_mult = today_vol / avg_vol if avg_vol > 0 else 1
-        vol_status = "Normal"
-        
-        if vol_mult >= 3.0 and last_p > prev_p: vol_status = f"🔥 MEGA SPIKE ({vol_mult:.1f}x)"
-        elif last_p < prev_p and today_vol < avg_vol: vol_status = f"📉 Dry Pullback ({vol_mult:.1f}x)"
-        elif last_p < prev_p and today_vol > avg_vol: vol_status = f"🩸 Heavy Selling ({vol_mult:.1f}x)"
-        elif last_p > prev_p and today_vol > avg_vol: vol_status = f"📈 Breakout ({vol_mult:.1f}x)"
-        
-        if strict_mode:
-            if turnover < 10000000: 
-                return {"success": False, "log": {"Stock": raw_name, "Status": "Turnover < 1 Crore"}}
-            if dist_from_52w > 25: 
-                return {"success": False, "log": {"Stock": raw_name, "Status": f"Too far from 52W High ({dist_from_52w:.1f}%)"}}
-            if rs_rating < -5: 
-                return {"success": False, "log": {"Stock": raw_name, "Status": f"Weak vs Nifty ({rs_rating:.1f}%)"}}
-            if last_p < ema20 or last_p < sma50 or last_p < sma200:
-                return {"success": False, "log": {"Stock": raw_name, "Status": "Failed Trend Filters (Below MAs)"}}
-
         tr = pd.concat([df['High']-df['Low'], abs(df['High']-df['Close'].shift()), abs(df['Low']-df['Close'].shift())], axis=1).max(axis=1)
-        risk_per_share = 1.5 * float(tr.rolling(14).mean().iloc[-1])
-        if risk_per_share <= 0: risk_per_share = last_p * 0.02 
+        risk_val = 1.5 * float(tr.rolling(14).mean().iloc[-1])
         
-        ema_zone = f"Perfect ({dist_from_ema:.1f}%)" if dist_from_ema <= 8 else f"⚠️ Extended ({dist_from_ema:.1f}%)"
-        high_dist_str = f"Near High ({dist_from_52w:.1f}%)" if dist_from_52w <= 10 else f"{dist_from_52w:.1f}% Away"
+        info = yt.info
+        sec = info.get('sector', 'Unknown')
 
-        tv_symbol = ticker.replace(".NS", "")
-        tv_link = f"https://in.tradingview.com/chart/?symbol=NSE:{tv_symbol}"
-
-        data = {
-            "Stock": raw_name, "Ticker": ticker, "Sector": short_sector, "Sec_Trend": sector_trend,
-            "RS (Nifty)": rs_str, "52W High": high_dist_str, "EMA Zone": ema_zone, "Vol Action": vol_status, 
-            "Price": round(last_p, 2), "SL": round(last_p - risk_per_share, 2),
-            "Risk_Per_Share": risk_per_share, "Chart": tv_link
+        return {
+            "Stock": s_name, "Sector": sec[:10], "Sec_Trend": sector_trends_dict.get(sec, "N/A"),
+            "RS Alpha": rs_str, "52W High": f"{dist_52w:.1f}%", 
+            "EMA Zone": "Perfect ✅" if abs(last_p - ema20)/ema20 < 0.05 else "⚠️ Extended",
+            "Vol Action": vol_status, "WinRate": run_backtest(df), "Price": round(last_p, 2),
+            "Target (1:2)": round(last_p + (risk_val * 2), 2), "SL": round(last_p - risk_val, 2),
+            "Risk_Amt": risk_val
         }
-        return {"success": True, "data": data}
-    except Exception: return {"success": False, "log": {"Stock": raw_name, "Status": "Error Fetching Data"}}
+    except: return None
+
+# --- 4. STYLING LOGIC ---
+def apply_traffic_styles(val):
+    if isinstance(val, str):
+        if '%' in val:
+            try:
+                num = float(val.replace('%', '').strip())
+                if num >= 60.0 or num <= 5.0: return 'color: #00FFC8; font-weight: bold;'
+                if num >= 40.0 or num <= 15.0: return 'color: #FFA500;'
+                return 'color: #FF4B4B;'
+            except: pass
+        if any(x in val for x in ['👑 Alpha', '🟢 Good', 'Perfect ✅', '📈 Breakout', '🔥 MEGA']):
+            return 'color: #00FFC8; font-weight: bold;'
+        if any(x in val for x in ['📉 Dry Pullback', 'Normal']): return 'color: #FFFF00;'
+        if any(x in val for x in ['⚠️ Extended', '🔴 Weak']): return 'color: #FF4B4B;'
+    return ''
+
+# --- 5. UI COMPONENTS ---
+m_h, n_ret = get_market_health()
+st.markdown(f"<div style='padding:10px; background-color:#1E2129; border-radius:8px; text-align:center; border:1px solid #FF9933; margin-bottom:15px;'>🧭 {m_h}</div>", unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("🛡️ Pro Risk Controller")
-    cap_rupees = st.number_input("Capital (₹)", value=100000, step=5000)
-    risk_pct = st.slider("Risk per Trade (%)", min_value=0.5, max_value=5.0, value=1.0, step=0.1)
-    max_l = (cap_rupees * risk_pct) / 100
-    st.markdown(f"**Max Risk per Trade:** ₹{max_l:.0f}")
-    st.write("---")
-    strict_mode = st.checkbox("🔥 Enable Pro Swing Filters", value=True)
+    cap = st.number_input("Total Capital (₹)", value=100000)
+    risk_p = st.slider("Risk per Trade %", 0.5, 5.0, 1.0, 0.1)
+    max_risk = (cap * risk_p) / 100
+    st.markdown(f"**Max Risk per Trade:** ₹{max_risk:.0f}")
+    st.divider()
+    auto_filter = st.checkbox("💎 Alpha + High WinRate (>65%)", value=False)
 
 c1, c2, c3, c4 = st.columns([3, 2, 1.5, 1.5])
-with c1: p_input = st.text_input("Names", placeholder="NTPC, ITC...", label_visibility="collapsed")
+with c1: p_in = st.text_input("Names", "SBIN, ITC, TATAMOTORS, COALINDIA", label_visibility="collapsed")
 with c2: u_file = st.file_uploader("CSV", type="csv", label_visibility="collapsed")
+
+load_area = st.empty()
+
 with c3:
-    if st.button("📥 LOAD DATA", type="secondary"):
+    if st.button("📥 LOAD DATA"):
         stocks = []
-        if u_file:
-            df_csv = pd.read_csv(u_file)
-            for col in df_csv.columns:
-                if df_csv[col].astype(str).str.contains('[A-Za-z]').any():
-                    stocks = df_csv[col].dropna().astype(str).tolist()
-                    break
-        elif p_input: stocks = [x.strip() for x in p_input.replace('\n', ',').split(',') if x.strip()]
-        
-        st.session_state['final_list'] = stocks
-        st.session_state['load_success'] = bool(stocks)
-        st.rerun()
-        
-    if st.session_state['load_success']:
-        st.markdown(f"<div style='color:#FF9933; font-weight:bold; text-align:center;'>✅ {len(st.session_state['final_list'])} Ready!</div>", unsafe_allow_html=True)
+        if u_file: stocks = pd.read_csv(u_file).iloc[:, 0].dropna().astype(str).tolist()
+        elif p_in: stocks = [x.strip() for x in p_in.split(",") if x.strip()]
+        if stocks:
+            st.session_state['final_list'] = stocks
+            st.session_state['load_status'] = f"✅ Ready: {len(stocks)} Stocks"
+
+if st.session_state['load_status']:
+    load_area.markdown(f"<div style='color:#FF9933; font-weight:bold; margin-bottom:10px;'>{st.session_state['load_status']}</div>", unsafe_allow_html=True)
 
 with c4:
     if st.button("🚀 SCAN STOCKS", type="primary"):
-        if not st.session_state['final_list']: st.warning("Load Data First!")
-        else:
-            raw_data, logs = [], []
-            with st.spinner("Analyzing Sectors & Preparing Setup..."):
-                sector_trends_dict = get_all_sector_trends()
-
+        if st.session_state['final_list']:
+            sec_trends = get_all_sector_trends()
+            results = []
             p_bar = st.progress(0)
-            status_txt = st.empty()
-            status_txt.markdown(f"**⚡ Scanning {len(st.session_state['final_list'])} stocks...**")
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {executor.submit(analyze_stock, name, sector_trends_dict, strict_mode, nifty_50d_ret): name for name in st.session_state['final_list']}
-                for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                    res = future.result()
-                    if res['success']: raw_data.append(res['data'])
-                    elif res['log']: logs.append(res['log'])
-                    p_bar.progress((i + 1) / len(st.session_state['final_list']))
-            
-            status_txt.success("✨ Pro Scan Complete!")
-            st.session_state['raw_scan_data'] = raw_data
-            st.session_state['debug_info'] = logs
-            st.session_state['scan_triggered'] = True 
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as exe:
+                futures = {exe.submit(analyze_stock, n, sec_trends, n_ret): n for n in st.session_state['final_list']}
+                for i, f in enumerate(concurrent.futures.as_completed(futures)):
+                    res = f.result()
+                    if res: results.append(res)
+                    p_bar.progress((i+1)/len(st.session_state['final_list']))
+            st.session_state['df_main'] = pd.DataFrame(results)
 
-if st.session_state['raw_scan_data']:
-    st.divider()
+# --- 6. ERROR-FREE DATA EDITOR ---
+if not st.session_state['df_main'].empty:
+    df_to_show = st.session_state['df_main'].copy()
     
-    if st.session_state.get('scan_triggered', False) or 'df_final' not in st.session_state:
-        st.session_state['df_final'] = pd.DataFrame(st.session_state['raw_scan_data'])
-        st.session_state['scan_triggered'] = False
-        
-    st.markdown("### 🏆 Top Swing Picks (✏️ **Double-click Price or SL to Edit!**)")
-    st.markdown("<span style='color:grey; font-size:14px;'>*Click 'Open 📊' to see TradingView chart.*</span>", unsafe_allow_html=True)
-    
-    def color_cells(val):
-        if isinstance(val, str):
-            if '⚠️' in val or '🩸' in val or 'Away' in val or 'Weak' in val or '🔴' in val: return 'color: #FF4B4B;'
-            if 'Perfect' in val or 'Dry Pullback' in val or 'Near High' in val or 'Outperforming' in val or '🟢' in val: return 'color: #00FFC8;'
-            if 'MEGA SPIKE' in val or 'Alpha' in val or '👑' in val: return 'color: #FFD700; font-weight: bold;'
-        return ''
-    
-    df_to_display = st.session_state['df_final']
-    styled_df = df_to_display.style.map(color_cells) if hasattr(df_to_display.style, 'map') else df_to_display.style.applymap(color_cells)
-    
-    edited_df = st.data_editor(
-        styled_df,
-        use_container_width=True,
-        hide_index=True,
-        disabled=['Stock', 'Sector', 'Sec_Trend', 'RS (Nifty)', '52W High', 'EMA Zone', 'Vol Action', 'Chart'], 
-        column_config={
-            "Risk_Per_Share": None, 
-            "Ticker": None, 
-            "RS (Nifty)": st.column_config.TextColumn("⚖️ RS (Nifty)"),
-            "52W High": st.column_config.TextColumn("🎯 52W High"),
-            "Chart": st.column_config.LinkColumn("📺 Chart", display_text="Open 📊"),
-            "Price": st.column_config.NumberColumn("💲 Price", format="%.2f", step=0.5),
-            "SL": st.column_config.NumberColumn("🛑 SL (ATR)", format="%.2f", step=0.5)
-        }
-    )
-    
-    needs_rerun = False
-    for idx in edited_df.index:
-        old_price = st.session_state['df_final'].at[idx, 'Price']
-        new_price = edited_df.at[idx, 'Price']
-        old_sl = st.session_state['df_final'].at[idx, 'SL']
-        new_sl = edited_df.at[idx, 'SL']
-        
-        if new_price != old_price and new_sl == old_sl:
-            risk_amt = st.session_state['df_final'].at[idx, 'Risk_Per_Share']
-            edited_df.at[idx, 'SL'] = round(new_price - risk_amt, 2)
-            needs_rerun = True
-            
-    if needs_rerun:
-        st.session_state['df_final'] = edited_df
-        st.rerun()
+    if auto_filter:
+        df_to_show['wr_num'] = pd.to_numeric(df_to_show['WinRate'].str.replace('%',''), errors='coerce').fillna(0)
+        df_to_show = df_to_show[(df_to_show['wr_num'] > 65) & (df_to_show['RS Alpha'] == '👑 Alpha')]
+        df_to_show = df_to_show.drop(columns=['wr_num'])
+
+    if df_to_show.empty:
+        st.warning("⚠️ No stocks match the Alpha + 65% WinRate criteria.")
     else:
-        st.session_state['df_final'] = edited_df
-    
-    st.markdown("<br><h3 style='color:#FF9933;'>🎯 Trade Execution Planner</h3>", unsafe_allow_html=True)
-    selected_stock = st.selectbox("👉 Choose Stock to view Final Plan", st.session_state['df_final']['Stock'].tolist())
-    
-    row = st.session_state['df_final'][st.session_state['df_final']['Stock'] == selected_stock].iloc[0]
-    calc_price, calc_sl = float(row['Price']), float(row['SL'])
-    new_risk_per_share = calc_price - calc_sl if (calc_price - calc_sl) > 0 else 1 
-    
-    calc_qty = max(1, int(max_l / new_risk_per_share))
-    if (calc_qty * calc_price) > cap_rupees: calc_qty = max(1, int(cap_rupees / calc_price))
-    
-    st.markdown(f"<div style='background-color:#1E2129; padding:20px; border-radius:10px; border: 1px solid #FF9933;'>", unsafe_allow_html=True)
-    col1, col2, col3, col4 = st.columns(4)
-    with col1: st.markdown(f"<h4 style='color:#FF9933; margin-top:0px;'>{selected_stock}</h4><span style='color:white; font-size:14px;'>{row['Sector']} | RSI: {row['Sec_Trend']}</span>", unsafe_allow_html=True)
-    with col2: st.metric("📦 Adjusted Quantity", f"{calc_qty} Shares")
-    with col3: st.metric("💰 Total Invest", f"₹ {round(calc_qty * calc_price, 2)}")
-    with col4: st.metric("🛑 Total Risk", f"₹ {round(calc_qty * new_risk_per_share, 2)}")
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("### 🏆 Top Picks (Price Sync Enabled)")
+        
+        # Capture the edited data
+        edited_data = st.data_editor(
+            df_to_show.style.map(apply_traffic_styles),
+            use_container_width=True, hide_index=True,
+            disabled=["Stock", "Sector", "Sec_Trend", "RS Alpha", "52W High", "EMA Zone", "Vol Action", "WinRate"],
+            column_config={
+                "Risk_Amt": None, "Price": st.column_config.NumberColumn("💲 Price", format="%.2f", step=0.1),
+                "SL": st.column_config.NumberColumn("🛑 SL", format="%.2f"),
+                "Target (1:2)": st.column_config.NumberColumn("🎯 Target", format="%.2f")
+            },
+            key="v15_editor"
+        )
 
-elif st.session_state['debug_info']:
-    st.error("No stocks matched the Strict Pro Filters.")
-    with st.expander("🔍 Rejection Details (Why stocks failed)"):
-        st.table(pd.DataFrame(st.session_state['debug_info']))
+        # 🧠 STABLE SYNC: Compare row by row carefully to avoid IndexError
+        needs_rerun = False
+        for idx in range(len(edited_data)):
+            original_idx = df_to_show.index[idx]
+            new_p = edited_data.iloc[idx]['Price']
+            old_p = st.session_state['df_main'].at[original_idx, 'Price']
+            
+            if new_p != old_p:
+                risk_amt = st.session_state['df_main'].at[original_idx, 'Risk_Amt']
+                st.session_state['df_main'].at[original_idx, 'Price'] = new_p
+                st.session_state['df_main'].at[original_idx, 'SL'] = round(new_p - risk_amt, 2)
+                st.session_state['df_main'].at[original_idx, 'Target (1:2)'] = round(new_p + (risk_amt * 2), 2)
+                needs_rerun = True
+
+        if needs_rerun:
+            st.rerun()
+
+    st.divider()
+    st.subheader("🎯 Trade Execution Planner")
+    if not df_to_show.empty:
+        stocks_available = df_to_show['Stock'].tolist()
+        pick = st.selectbox("👉 Select Stock:", stocks_available)
+        row = st.session_state['df_main'][st.session_state['df_main']['Stock'] == pick].iloc[0]
+        
+        risk_per_sh = row['Price'] - row['SL'] if row['Price'] > row['SL'] else 1
+        qty = int(max_risk / risk_per_sh)
+        
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("📦 Quantity", f"{qty} Shrs")
+        p2.metric("💰 Investment", f"₹{round(qty * row['Price'], 2)}")
+        p3.metric("🎯 Target (1:2)", f"₹{row['Target (1:2)']}")
+        p4.metric("🛑 Stoploss", f"₹{row['SL']}")
